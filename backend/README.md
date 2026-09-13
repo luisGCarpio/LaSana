@@ -328,6 +328,39 @@ Regla aprobada: la venta permite lotes con `dias_restantes >= 30` y bloquea de `
   * **Convención de kardex:** entradas con cantidad positiva (`+`), salidas con cantidad negativa (`-`); el `tipo_movimiento` define la operación (`VENTA`, `AJUSTE_INGRESO`, y en Fase 2 `TRASLADO_SALIDA`/`TRASLADO_ENTRADA`/`MERMA`).
 * **`GET /ventas/:id`** (`@Roles('Cajero', 'Gerente', 'Dueño')`): retorna la venta con su `detalle_venta` (producto + lote), cliente y montos. El Cajero y el Gerente solo pueden consultar ventas de su sucursal (404 en caso contrario); el Dueño accede a todas.
 
+#### ¿Cómo funciona una venta? (Explicación paso a paso)
+
+Piensa en una venta como un cajero atendiendo en mostrador. El sistema la procesa en este orden:
+
+**Paso 0 — El requisito que lo es todo: la caja abierta.**
+Ninguna venta puede registrarse si el cajero no abrió su caja al iniciar el turno. Si intenta vender sin caja abierta, el sistema lo rechaza de inmediato con el mensaje *"Debe aperturar una caja antes de vender"*. ¿Por qué? Porque todo el dinero que entra por ventas debe poder cuadrarse contra un turno de caja al final del día. Sin turno abierto no hay a quién imputarle el dinero.
+
+**Paso 1 — Revisar los productos del carrito.**
+El sistema verifica que cada producto del pedido exista en el catálogo y esté activo. También rechaza si alguien intenta incluir el mismo producto dos veces en la misma venta (debe ir como una sola línea con su cantidad).
+
+**Paso 2 — Los medicamentos con receta médica.**
+Si el carrito incluye un medicamento marcado como "requiere receta", la venta **no pasa sin receta**. El sistema valida tres cosas sobre ella:
+   1. **Que exista** registrada en el sistema (el médico o el cajero la dieron de alta antes).
+   2. **Que esté vigente** (no vencida según su fecha de vencimiento).
+   3. **Que no se haya usado antes** (una receta solo sirve para una venta; sirve una vez y queda "quemada").
+   Si además se indicó un cliente, el sistema confirma que la receta pertenezca a ese mismo cliente. Si no se indicó cliente, se toma el de la receta.
+
+**Paso 3 — El sistema elige los lotes solo (regla FEFO).**
+El cajero **nunca elige de qué paquete sale el medicamento**: el sistema decide en segundo plano, y siempre despacha **lo que vence primero** ("First Expired, First Out": lo primero en caducar es lo primero en salir). Esto evita que queden cajas olvidadas que acaben venciéndose en la repisa. Si un pedido necesita 10 unidades y un lote solo tiene 6, el sistema toma las 6 de ese lote y las 4 restantes del siguiente. Antes de despachar, cada lote pasa por un semáforo según los días que le faltan para vencer:
+
+   | Días para vencer | Semáforo | ¿Se puede vender? |
+   |---|---|---|
+   | Ya venció o hoy | 🛑 Vencido | No |
+   | 1 a 29 días | 🔴 Crítico | No (sugerir traslado urgente o merma) |
+   | 30 a 90 días | 🟡 Preventivo | Sí, con prioridad FEFO |
+   | Más de 90 días | 🟢 Normal | Sí, con prioridad FEFO |
+
+**Paso 4 — Registro y cobro.**
+Con los lotes asignados, el sistema calcula los montos (el precio lo pone el backend, **nunca** el frontend, para que nadie pueda manipularlo) y guarda la venta como `COMPLETADA` con su detalle producto por producto.
+
+**Paso 5 — La red de seguridad: todo o nada.**
+Todos los pasos anteriores ocurren dentro de una sola transacción de base de datos ("todo o nada"). Si algo falla a mitad de camino —se acabó el stock, la receta ya se usó, un producto ya no existe— **se cancela todo y el inventario queda exactamente como estaba**. Es imposible que el sistema descunte stock de un producto y luego falle sin registrar la venta, o viceversa: el inventario nunca se descuadra por una venta a medias. Además, cuando dos cajeros venden el mismo producto al mismo tiempo, el sistema "pone en fila" las peticiones (bloqueo de lotes) y verifica el stock justo antes de descontarlo, así que tampoco se puede vender más de lo que hay.
+
 ---
 
 ### Fase 2 (Por construir tras completar la Fase 1)
