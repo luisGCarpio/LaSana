@@ -9,6 +9,8 @@ backend/node_modules/
 # Compilación y artefactos
 dist/
 backend/dist/
+build/
+backend/build/
 *.tsbuildinfo
 
 # Variables de entorno y credenciales (seguridad)
@@ -32,3 +34,7 @@ backend/coverage/
 Thumbs.db
 .vscode/
 .idea/
+
+# Artefactos de pruebas automatizadas (Playwright)
+.playwright-mcp/
+/*.png

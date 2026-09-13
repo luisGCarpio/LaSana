@@ -239,24 +239,79 @@ El 50% correspondiente a la Fase 1 está dividido equitativamente en dos frentes
 
 ---
 
-### Jhonatan: *Catálogo, Stock y Motor de Ventas*
-* **Módulos `productos` y `lotes`:**
-  * Listado y búsqueda de medicamentos en catálogo.
-  * Lógica del **Semáforo FEFO** por fecha de vencimiento:
-    * 🛑 **Vencido ($\le 0$ días):** Venta bloqueada.
-    * 🔴 **Crítico ($1 - 29$ días):** Venta bloqueada en mostrador.
-    * 🟡 **Preventivo ($30 - 90$ días) / 🟢 Normal ($> 90$ días):** Aptos para despacho con prioridad FEFO.
-* **Módulo `inventarios`:**
-  * Consulta de existencias disponibles por lote en la sucursal actual.
-  * Endpoint de consulta de stock en otras sucursales (permitido únicamente si el stock local está en 0).
-* **Módulo `ventas` (Núcleo Transaccional):**
-  * Endpoint `POST /ventas` ejecutado dentro de una transacción atómica (`prisma.$transaction`):
-    * 1. Verifica que el cajero tenga una caja en estado `ABIERTA`.
-    * 2. Si algún producto tiene `requiere_receta = true`, valida que se adjunte una receta médica válida.
-    * 3. Valida disponibilidad de stock y semáforo de vencimiento ($> 30$ días).
-    * 4. Descuenta el inventario en `inventario_lote`.
-    * 5. Inserta la cabecera `venta` y los items en `detalle_venta`.
-    * 6. Registra los movimientos de salida en `kardex_movimiento`.
+### Jhonatan: *Catálogo, Stock y Motor de Ventas (Implementado ✅)*
+
+#### Semáforo FEFO compartido (`common/utils/fefo.util.ts`)
+
+Calcula `dias_restantes` en días calendario (medianoche UTC de la fecha de vencimiento contra la fecha local actual) y clasifica el lote:
+
+| Días restantes | Semáforo | ¿Despachable en mostrador? |
+|---|---|---|
+| $\le 0$ | 🛑 `VENCIDO` | No |
+| $1 - 29$ | 🔴 `CRITICO` | No (sugerir traslado urgente o merma) |
+| $30 - 90$ | 🟡 `PREVENTIVO` | Sí, con prioridad FEFO |
+| $> 90$ | 🟢 `NORMAL` | Sí |
+
+Regla aprobada: la venta permite lotes con `dias_restantes >= 30` y bloquea de `0` a `29`. El despacho siempre reparte la cantidad entre los lotes elegibles ordenados por `fecha_vencimiento ASC` (FEFO), aunque un ítem abarque varios lotes (genera una fila de `detalle_venta` y un movimiento de kardex por lote).
+
+#### 1. Módulo `productos`
+
+* **`POST /productos`** (`@Roles('Dueño')`):
+  * **Request Body:** `{ "codigo": string, "nombre": string, "descripcion"?: string, "precio_venta": number, "requiere_receta"?: boolean }`
+  * **Reglas:** `codigo` único (400 si se repite); `precio_venta >= 0`.
+* **`GET /productos`** (`@Roles('Cajero', 'Gerente', 'Dueño')`):
+  * **Query params:** `busqueda` (coincidencia parcial en `codigo`/`nombre`, insensible a mayúsculas), `activo` (`true`/`false`).
+* **`GET /productos/codigo/:codigo`** y **`GET /productos/:id`** (todos los roles): consulta puntual (404 si no existe).
+* **`PATCH /productos/:id`** (`@Roles('Dueño')`): mismos campos del alta, todos opcionales.
+* **`DELETE /productos/:id`** (`@Roles('Dueño')`): **baja lógica** (`activo = false`), conservando el histórico de ventas/lotes.
+
+#### 2. Módulo `lotes`
+
+* **`POST /lotes`** (`@Roles('Dueño', 'Gerente')`):
+  * **Request Body:** `{ "id_producto": number, "numero_lote": string, "fecha_fabricacion"?: "YYYY-MM-DD", "fecha_vencimiento": "YYYY-MM-DD" }`
+  * **Reglas:** el producto debe existir (404); `numero_lote` único por producto (400, restricción `uq_lote_producto_numero`). La respuesta incluye `dias_restantes` y `semaforo`.
+* **`GET /lotes`** (`@Roles('Cajero', 'Gerente', 'Dueño')`):
+  * **Query params:** `id_producto`, `semaforo` (`VENCIDO`, `CRITICO`, `PREVENTIVO`, `NORMAL`).
+  * Cada lote retorna su `dias_restantes` y `semaforo` calculados.
+* **`GET /lotes/:id`** (todos los roles): consulta puntual con semáforo.
+
+#### 3. Módulo `inventarios`
+
+* **`GET /inventarios/stock/:id_producto`** (`@Roles('Cajero', 'Gerente', 'Dueño')`):
+  * **Cajero:** solo las existencias de su sucursal. **Gerente/Dueño:** las 4 sucursales.
+  * **Respuesta por lote:** `{ id_inventario, id_sucursal, sucursal, id_lote, numero_lote, fecha_vencimiento, dias_restantes, semaforo, cantidad, stock_minimo, alerta_stock_bajo }` (solo lotes con `cantidad > 0`).
+* **`GET /inventarios/stock/:id_producto/otras-sucursales`** (`@Roles('Cajero', 'Gerente', 'Dueño')`):
+  * **Regla:** el Cajero solo puede consultarla si su stock local del producto es 0; si tiene existencias locales, el backend responde 400.
+  * **Respuesta:** `[{ id_sucursal, sucursal, cantidad_total, vencimiento_mas_proximo }]`.
+* **`POST /inventarios/ingreso`** (`@Roles('Gerente', 'Dueño')` — **provisional hasta que exista el módulo de Compras**):
+  * **Request Body:** `{ "id_lote": number, "cantidad": number, "stock_minimo"?: number, "id_sucursal"?: number }`
+  * El Gerente siempre ingresa en su sede asignada; el Dueño debe indicar `id_sucursal`.
+  * **Transacción atómica:** `upsert` de `inventario_lote` (suma cantidad) + movimiento de entrada en kardex (`tipo_movimiento: 'AJUSTE_INGRESO'`, cantidad positiva, `referencia_tipo: 'INVENTARIO'`).
+
+#### 4. Módulo `ventas` (Núcleo Transaccional)
+
+* **`POST /ventas`** (`@Roles('Cajero', 'Gerente')`):
+  * **Request Body:**
+    ```json
+    {
+      "id_cliente": 5,
+      "numero_receta": "REC-2026-001",
+      "items": [
+        { "id_producto": 1, "cantidad": 2 },
+        { "id_producto": 8, "cantidad": 1 }
+      ]
+    }
+    ```
+  * **Regla de oro:** `precio_unitario`, `subtotal`, `impuesto` y `total` **nunca** vienen del cliente; se calculan en el backend (`venta.impuesto = 0` en el MVP, `total = subtotal`). El cajero **no elige lote**: el sistema asigna automáticamente bajo FEFO.
+  * **Pasos dentro de un único `prisma.$transaction`:**
+    1. Verifica turno de caja `ABIERTA` del empleado en sesión (400 si no lo tiene).
+    2. Carga los productos y valida que existan y estén activos (404/400). Rechaza productos duplicados en el mismo request.
+    3. Si algún ítem tiene `requiere_receta = true`, exige `numero_receta` y valida **existencia, vigencia y uso único** (receta no vinculada a una venta `COMPLETADA` previa). Además, si llega `id_cliente`, debe coincidir con el cliente de la receta; si no llega, se asocia el cliente de la receta. La fila de la receta se bloquea con `SELECT ... FOR UPDATE` para impedir doble uso concurrente.
+    4. Por cada ítem busca los lotes de la sucursal del usuario con `cantidad > 0` y `fecha_vencimiento >= hoy + 30 días`, los ordena FEFO y reparte la cantidad entre ellos con descuento condicional (`cantidad: { gte: X }`) para evitar sobreventa concurrente. Si no alcanza, diferencia el error: sin stock, stock retenido en lotes 🔴/🛑, o stock vendible insuficiente.
+    5. Inserta la cabecera `venta` y sus `detalle_venta` (una fila por lote asignado; `subtotal` es columna generada y no se escribe).
+    6. Registra las salidas en `kardex_movimiento` (`tipo_movimiento: 'VENTA'`, `referencia_tipo: 'VENTA'`, `referencia_id = id_venta`, cantidad **negativa**).
+  * **Convención de kardex:** entradas con cantidad positiva (`+`), salidas con cantidad negativa (`-`); el `tipo_movimiento` define la operación (`VENTA`, `AJUSTE_INGRESO`, y en Fase 2 `TRASLADO_SALIDA`/`TRASLADO_ENTRADA`/`MERMA`).
+* **`GET /ventas/:id`** (`@Roles('Cajero', 'Gerente', 'Dueño')`): retorna la venta con su `detalle_venta` (producto + lote), cliente y montos. El Cajero y el Gerente solo pueden consultar ventas de su sucursal (404 en caso contrario); el Dueño accede a todas.
 
 ---
 

@@ -1,0 +1,3 @@
+Siempre que inicies una sesión o chat nuevo en este proyecto, lee y analiza obligatoriamente
+el archivo backend/CONTEXTO_PROYECTO.md y backend/FLUJOS_NEGOCIO.md para conocer las reglas de negocio, 
+la estructura de la base de datos y la arquitectura antes de proponer cualquier código o solución.
