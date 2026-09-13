@@ -6,6 +6,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { IngresoInventarioDto } from './dto/ingreso-inventario.dto';
 import { calcularSemaforo } from '../../common/utils/fefo.util';
+import { manejarErrorPrisma } from '../../common/utils/prisma-error.util';
 
 @Injectable()
 export class InventariosService {
@@ -110,7 +111,15 @@ export class InventariosService {
       throw new NotFoundException('Lote no encontrado');
     }
 
-    // 2. Resolver sucursal de destino según rol
+    // 2. Validar que el lote no esté vencido (el kardex no debe registrar
+    //    entradas de stock que no se pueden vender ni trasladar)
+    if (calcularSemaforo(lote.fecha_vencimiento).semaforo === 'VENCIDO') {
+      throw new BadRequestException(
+        `El lote "${lote.numero_lote}" está vencido; registre una merma en lugar de un ingreso de stock`,
+      );
+    }
+
+    // 3. Resolver sucursal de destino según rol
     let id_sucursal = user.id_sucursal;
 
     if (user.rol === 'Dueño') {
@@ -131,8 +140,11 @@ export class InventariosService {
       id_sucursal = dto.id_sucursal;
     }
 
-    // 3. Transacción: sumar stock + registrar entrada en kardex
-    return this.prisma.$transaction(async (tx) => {
+    // 4. Transacción: sumar stock + registrar entrada en kardex
+    //    .catch: dos ingresos simultáneos del mismo (sucursal, lote) que
+    //    compiten en el create del upsert producen P2002 => 409.
+    return this.prisma
+      .$transaction(async (tx) => {
       const inventario = await tx.inventario_lote.upsert({
         where: {
           id_sucursal_id_lote: { id_sucursal, id_lote: dto.id_lote },
@@ -165,7 +177,8 @@ export class InventariosService {
       });
 
       return { ...inventario, lote };
-    });
+    })
+      .catch(manejarErrorPrisma);
   }
 
   private async obtenerProducto(id_producto: number) {

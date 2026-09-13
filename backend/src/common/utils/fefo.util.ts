@@ -12,20 +12,23 @@ export const DIAS_PREVENTIVO_MAXIMO = 90;
 
 const MS_POR_DIA = 24 * 60 * 60 * 1000;
 
-function hoyUtcMedianoche(): number {
+// Ancla temporal: siempre medianoche UTC del día actual en calendario UTC.
+// Es Obligatorio usar getUTC* (no getFullYear/getMonth/getDate locales) porque
+// las columnas @db.Date de PostgreSQL/Prisma se leen como medianoche UTC;
+// mezclar calendario local con esas fechas desplaza el semáforo FEFO y el
+// bloqueo de venta de lotes con menos de 30 días según la zona horaria del
+// servidor.
+export function hoyUtcMedianoche(): Date {
   const ahora = new Date();
-  return Date.UTC(ahora.getFullYear(), ahora.getMonth(), ahora.getDate());
+  return new Date(
+    Date.UTC(ahora.getUTCFullYear(), ahora.getUTCMonth(), ahora.getUTCDate()),
+  );
 }
 
 export function fechaMinimaVenta(): Date {
-  const ahora = new Date();
-  return new Date(
-    Date.UTC(
-      ahora.getFullYear(),
-      ahora.getMonth(),
-      ahora.getDate() + DIAS_MINIMOS_VENTA,
-    ),
-  );
+  const minima = hoyUtcMedianoche();
+  minima.setUTCDate(minima.getUTCDate() + DIAS_MINIMOS_VENTA);
+  return minima;
 }
 
 export function calcularSemaforo(fecha_vencimiento: Date): {
@@ -39,7 +42,7 @@ export function calcularSemaforo(fecha_vencimiento: Date): {
   );
 
   const dias_restantes = Math.round(
-    (vencimiento - hoyUtcMedianoche()) / MS_POR_DIA,
+    (vencimiento - hoyUtcMedianoche().getTime()) / MS_POR_DIA,
   );
 
   let semaforo: SemaforoFefo;

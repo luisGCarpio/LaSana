@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateRecetaDto } from './dto/create-receta.dto';
+import { manejarErrorPrisma } from '../../common/utils/prisma-error.util';
 
 export interface ValidacionRecetaResultado {
   valida: boolean;
@@ -38,20 +39,23 @@ export class RecetasService {
     }
 
     // 3. Crear registro de receta médica
-    return this.prisma.receta.create({
-      data: {
-        id_cliente: dto.id_cliente,
-        numero_receta: dto.numero_receta,
-        fecha_emision: new Date(dto.fecha_emision),
-        fecha_vencimiento: dto.fecha_vencimiento
-          ? new Date(dto.fecha_vencimiento)
-          : null,
-        observacion: dto.observacion || null,
-      },
-      include: {
-        cliente: true,
-      },
-    });
+    // .catch: la verificación de unicidad es check-then-insert; P2002 => 409
+    return this.prisma.receta
+      .create({
+        data: {
+          id_cliente: dto.id_cliente,
+          numero_receta: dto.numero_receta,
+          fecha_emision: new Date(dto.fecha_emision),
+          fecha_vencimiento: dto.fecha_vencimiento
+            ? new Date(dto.fecha_vencimiento)
+            : null,
+          observacion: dto.observacion || null,
+        },
+        include: {
+          cliente: true,
+        },
+      })
+      .catch(manejarErrorPrisma);
   }
 
   async validarReceta(numero_receta: string): Promise<ValidacionRecetaResultado> {

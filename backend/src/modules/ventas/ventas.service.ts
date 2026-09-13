@@ -6,7 +6,11 @@ import {
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateVentaDto } from './dto/create-venta.dto';
-import { fechaMinimaVenta } from '../../common/utils/fefo.util';
+import { fechaMinimaVenta, hoyUtcMedianoche } from '../../common/utils/fefo.util';
+import {
+  manejarErrorPrisma,
+  StockConflictException,
+} from '../../common/utils/prisma-error.util';
 
 @Injectable()
 export class VentasService {
@@ -22,7 +26,8 @@ export class VentasService {
       );
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    return this.prisma
+      .$transaction(async (tx) => {
       // 2. Validar que el empleado tenga un turno de caja ABIERTA
       const turno = await tx.cierre_caja.findFirst({
         where: { id_empleado: user.id_empleado, estado: 'ABIERTA' },
@@ -101,7 +106,9 @@ export class VentasService {
       const detalles: Prisma.detalle_ventaUncheckedCreateWithoutVentaInput[] =
         [];
       const movimientos: Prisma.kardex_movimientoCreateManyInput[] = [];
-      let subtotal = 0;
+      // Aritmética decimal exacta: los floats de JS pueden acumular drift de
+      // centavos frente a la columna Decimal(12,2) de la base de datos.
+      let subtotal = new Prisma.Decimal(0);
 
       for (const item of dto.items) {
         const producto = mapaProductos.get(item.id_producto)!;
@@ -113,8 +120,10 @@ export class VentasService {
         );
 
         for (const asignacion of asignaciones) {
-          subtotal += Number(
-            (asignacion.cantidad * Number(producto.precio_venta)).toFixed(2),
+          subtotal = subtotal.plus(
+            new Prisma.Decimal(asignacion.cantidad).times(
+              producto.precio_venta,
+            ),
           );
 
           detalles.push({
@@ -136,7 +145,7 @@ export class VentasService {
         }
       }
 
-      const totalVenta = Number(subtotal.toFixed(2));
+      const totalVenta = subtotal.toDecimalPlaces(2);
 
       // 7. Registrar cabecera y detalle de la venta (subtotal es columna generada)
       const venta = await tx.venta.create({
@@ -176,7 +185,9 @@ export class VentasService {
     }, {
       maxWait: 10000,
       timeout: 30000,
-    });
+    })
+      // Traducción de errores de infraestructura: P2002/P2034 => 409/503
+      .catch(manejarErrorPrisma);
   }
 
   async findById(id: number, user: any) {
@@ -211,19 +222,25 @@ export class VentasService {
     cantidad: number,
     id_sucursal: number,
   ) {
-    // 1. Lotes elegibles (desde 30 días de vigencia), ordenados FEFO
-    const lotesDisponibles = await tx.inventario_lote.findMany({
-      where: {
-        id_sucursal,
-        cantidad: { gt: 0 },
-        lote: {
-          id_producto: producto.id_producto,
-          fecha_vencimiento: { gte: fechaMinimaVenta() },
-        },
-      },
-      include: { lote: true },
-      orderBy: { lote: { fecha_vencimiento: 'asc' } },
-    });
+    // 1. Lotes elegibles (desde 30 días de vigencia), ordenados FEFO.
+    //    SELECT ... FOR UPDATE: bloqueo pesimista con orden determinista
+    //    (fecha_vencimiento ASC, id_lote ASC) para evitar deadlocks entre
+    //    ventas concurrentes del mismo producto y serializar los descuentos
+    //    antes de tocar el inventario. El updateMany condicional de más
+    //    abajo se conserva como segunda barrera atómica.
+    const lotesDisponibles = await tx.$queryRaw<
+      Array<{ id_inventario: number; id_lote: number; cantidad: number }>
+    >`
+      SELECT il.id_inventario, il.id_lote, il.cantidad
+      FROM inventario_lote il
+      JOIN lote l ON l.id_lote = il.id_lote
+      WHERE il.id_sucursal = ${id_sucursal}
+        AND il.cantidad > 0
+        AND l.id_producto = ${producto.id_producto}
+        AND l.fecha_vencimiento >= ${fechaMinimaVenta()}::date
+      ORDER BY l.fecha_vencimiento ASC, il.id_lote ASC
+      FOR UPDATE OF il
+    `;
 
     const stockElegible = lotesDisponibles.reduce(
       (total, item) => total + item.cantidad,
@@ -275,9 +292,9 @@ export class VentasService {
       });
 
       if (actualizado.count === 0) {
-        throw new BadRequestException(
-          'El stock del producto cambió durante la operación. Intente nuevamente',
-        );
+        // 409 Conflict: el lock previo minimiza esto, pero si otra
+        // transacción logró descontar primero, el cliente debe reintentar.
+        throw new StockConflictException();
       }
 
       asignaciones.push({ id_lote: item.id_lote, cantidad: aTomar });
@@ -316,16 +333,12 @@ export class VentasService {
       throw new NotFoundException('Receta médica no encontrada');
     }
 
-    // 1. Validar vigencia (válida hasta el final del día de vencimiento)
+    // 1. Validar vigencia (válida hasta el final del día de vencimiento).
+    //    Compara contra la medianoche UTC del día actual, el mismo ancla que
+    //    usa el semáforo FEFO, para que ningún endpoint derive el "hoy" de
+    //    forma distinta según la zona horaria del servidor.
     if (receta.fecha_vencimiento) {
-      const ahora = new Date();
-      const hoyUtc = Date.UTC(
-        ahora.getFullYear(),
-        ahora.getMonth(),
-        ahora.getDate(),
-      );
-
-      if (receta.fecha_vencimiento.getTime() < hoyUtc) {
+      if (receta.fecha_vencimiento.getTime() < hoyUtcMedianoche().getTime()) {
         throw new BadRequestException('La receta médica se encuentra vencida');
       }
     }

@@ -15,7 +15,15 @@ const config: Config = {
   rootDir: '.',
   testRegex: '.*\\.spec\\.ts$',
   transform: {
-    '^.+\\.(t|j)s$': 'ts-jest',
+    '^.+\\.(t|j)s$': [
+      'ts-jest',
+      {
+        // ts-jest exige rootDir explícito (TS5011): los specs viven en src/,
+        // así que se compila con tsconfig.spec.json en lugar del tsconfig.json
+        // base (que incluye jest.config.ts, prisma/seed.ts y test/ fuera de src).
+        tsconfig: '<rootDir>/tsconfig.spec.json',
+      },
+    ],
   },
   moduleNameMapper: pathsToModuleNameMapper(paths, { prefix: '<rootDir>/' }),
   collectCoverageFrom: [

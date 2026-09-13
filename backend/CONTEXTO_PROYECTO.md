@@ -92,7 +92,7 @@ backend/src/
 - **Modelo (M):** Prisma Client contra PostgreSQL; persistencia transaccional.
 - **Controlador (C):** `@Controller` REST, validación con `class-validator`, guards de JWT/roles.
 - **Vista (V):** respuestas JSON + Swagger UI.
-- **Estado actual:** Fase 1 (MVP) implementada — auth, cajas, clientes, recetas, catálogo/stock y motor de ventas. **Fase 2 en construcción:** traslados, compras, mermas y reportes.
+- **Estado actual:** **Fase 1 (MVP) COMPLETADA, AUDITADA y oficialmente CERRADA** — auth, cajas, clientes, recetas, catálogo/stock y motor de ventas, con 6 parches defensivos aplicados (ver tabla de estado en `README.md`, sección "Hoja de Ruta - Fase 1"): CHECK de stock no negativo y coherencia de kardex en BD (`Base de datos/parche_seguridad_stock.sql`), ancla temporal UTC unificada, bloqueo pesimista `FOR UPDATE` determinista en asignación FEFO, mapeo P2002/P2034 → 409/503 (`common/utils/prisma-error.util.ts`), `Prisma.Decimal` en montos de venta y validaciones de fechas en lotes/ingresos. **Fase 2 en construcción:** traslados, compras, mermas y reportes.
 
 ---
 
@@ -114,6 +114,7 @@ Referencia rápida del esquema real (ver `Base de datos/BD.txt` para el DDL comp
 - Columnas calculadas: `subtotal` en `detalle_venta` y `detalle_compra` son `GENERATED ALWAYS ... STORED` (no se escriben manualmente).
 - Estados como varchar: `cierre_caja.estado` ('ABIERTA'/'CERRADA'), `venta.estado` ('COMPLETADA'...), `traslado.estado` ('PENDIENTE'/'EN_CAMINO'/'COMPLETADO'), `compra.estado` ('PENDIENTE'...).
 - `venta.id_receta` vincula la receta usada (uso único de recetas).
+- **Constraints defensivos (aplicados en el cierre de la Fase 1):** `ck_inventario_cantidad_no_negativa` (`cantidad >= 0` en `inventario_lote`) y `ck_kardex_signo` (`VENTA` ⇒ cantidad negativa, resto ⇒ positiva). ⚠️ Al agregar en Fase 2 nuevos tipos de salida en kardex (`TRASLADO_SALIDA`, `MERMA`...), recrear `ck_kardex_signo` incluyéndolos en el lado "cantidad < 0".
 
 ---
 

@@ -38,3 +38,5 @@ Thumbs.db
 # Artefactos de pruebas automatizadas (Playwright)
 .playwright-mcp/
 /*.png
+
+opencode.json

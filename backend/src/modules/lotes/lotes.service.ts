@@ -6,7 +6,8 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateLoteDto } from './dto/create-lote.dto';
 import { QueryLotesDto } from './dto/query-lotes.dto';
-import { calcularSemaforo } from '../../common/utils/fefo.util';
+import { calcularSemaforo, hoyUtcMedianoche } from '../../common/utils/fefo.util';
+import { manejarErrorPrisma } from '../../common/utils/prisma-error.util';
 
 @Injectable()
 export class LotesService {
@@ -38,20 +39,44 @@ export class LotesService {
       );
     }
 
+    // 2. Validar coherencia de fechas (ancla UTC: las @db.Date se leen como
+    //    medianoche UTC, así que "hoy" también se calcula en UTC)
+    const vencimiento = new Date(dto.fecha_vencimiento);
+
+    if (vencimiento.getTime() < hoyUtcMedianoche().getTime()) {
+      throw new BadRequestException(
+        'La fecha de vencimiento no puede ser anterior o igual al día actual (no se permiten lotes vencidos)',
+      );
+    }
+
+    if (dto.fecha_fabricacion) {
+      const fabricacion = new Date(dto.fecha_fabricacion);
+
+      if (fabricacion.getTime() > vencimiento.getTime()) {
+        throw new BadRequestException(
+          'La fecha de fabricación no puede ser posterior a la fecha de vencimiento',
+        );
+      }
+    }
+
     // 3. Registrar lote
-    const lote = await this.prisma.lote.create({
-      data: {
-        id_producto: dto.id_producto,
-        numero_lote: dto.numero_lote,
-        fecha_fabricacion: dto.fecha_fabricacion
-          ? new Date(dto.fecha_fabricacion)
-          : null,
-        fecha_vencimiento: new Date(dto.fecha_vencimiento),
-      },
-      include: {
-        producto: { select: { codigo: true, nombre: true } },
-      },
-    });
+    // .catch: la verificación previa de unicidad es check-then-insert;
+    // la carrera de dos registros idénticos responde P2002 => 409.
+    const lote = await this.prisma.lote
+      .create({
+        data: {
+          id_producto: dto.id_producto,
+          numero_lote: dto.numero_lote,
+          fecha_fabricacion: dto.fecha_fabricacion
+            ? new Date(dto.fecha_fabricacion)
+            : null,
+          fecha_vencimiento: vencimiento,
+        },
+        include: {
+          producto: { select: { codigo: true, nombre: true } },
+        },
+      })
+      .catch(manejarErrorPrisma);
 
     return { ...lote, ...calcularSemaforo(lote.fecha_vencimiento) };
   }

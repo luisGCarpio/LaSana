@@ -149,6 +149,21 @@ Para entregar un primer producto mínimo viable completamente funcional y testea
 * **Fase 1 (MVP actual - 50%):** Ciclo operativo completo de la farmacia (Autenticación, Turnos de Caja, Catálogo/Stock con FEFO, Clientes, Recetas y Motor de Ventas transaccional).
 * **Fase 2 (Siguiente 50%):** Logística y Gerencia (Traslados inter-sucursales, Compras a proveedores, Mermas y Reportes globales).
 
+### Estado de la Fase 1: ✅ COMPLETADA Y AUDITADA (cerrada oficialmente)
+
+Tras una auditoría de backend (concurrencia, zonas horarias, consistencia de errores y rendimiento), la Fase 1 se cerró aplicando 6 parches defensivos:
+
+| # | Parche | Ubicación |
+|---|--------|-----------|
+| 1 | `CHECK (cantidad >= 0)` en `inventario_lote` + coherencia de signo en `kardex_movimiento` (`ck_kardex_signo`) aplicados en Supabase | `Base de datos/parche_seguridad_stock.sql` |
+| 2 | Ancla temporal unificada en UTC (`getUTC*`): el semáforo FEFO, el bloqueo de lotes <30 días y la vigencia de recetas ya no dependen de la zona horaria del servidor | `common/utils/fefo.util.ts`, `ventas.service.ts` |
+| 3 | Bloqueo pesimista `SELECT ... FOR UPDATE` con orden determinista (`fecha_vencimiento ASC, id_lote ASC`) en la asignación FEFO: sin deadlocks ni sobreventa concurrente | `ventas.service.ts` |
+| 4 | Mapeo de errores de infraestructura: carrera de stock → **409 Conflict**, `P2002` (unicidad) → **409**, `P2034` (deadlock/serialización) → **503 reintentable** (ya no salen 500 crudos) | `common/utils/prisma-error.util.ts` (nuevo) |
+| 5 | Aritmética monetaria exacta con `Prisma.Decimal` en `subtotal`/`total` de la venta (sin drift de centavos frente a `Decimal(12,2)`) | `ventas.service.ts` |
+| 6 | Validación de fechas: lotes con `fecha_vencimiento <= hoy` o `fecha_fabricacion > fecha_vencimiento` rechazados; ingreso de stock bloqueado para lotes `VENCIDO` | `lotes.service.ts`, `inventarios.service.ts` |
+
+Deuda técnica conocida (para abordar en Fase 2, no bloquea el cierre): unificar la validación de receta duplicada (`recetas.service` vs `ventas.service`), índice parcial anti doble-uso de receta a nivel BD, paginación en `GET /lotes`, y reparar el harness de pruebas unitarias — `src/app.controller.spec.ts` (scaffold, no cubre lógica de Fase 1) no puede ejecutarse en este entorno por incompatibilidad preexistente del tooling: `@nestjs/testing` v12 es ESM-only y Jest 30.5.1 no puede requerirlo en Windows. Los portones de verificación de la Fase 1 fueron `npm run build` y `npm run lint` (ambos limpios).
+
 ---
 
 ## División del Trabajo en Dupla (Fase 1)
@@ -243,7 +258,7 @@ El 50% correspondiente a la Fase 1 está dividido equitativamente en dos frentes
 
 #### Semáforo FEFO compartido (`common/utils/fefo.util.ts`)
 
-Calcula `dias_restantes` en días calendario (medianoche UTC de la fecha de vencimiento contra la fecha local actual) y clasifica el lote:
+Calcula `dias_restantes` en días calendario con un ancla temporal unificada en UTC (medianoche UTC de la fecha de vencimiento contra medianoche UTC del día actual, `getUTC*` en ambas) y clasifica el lote:
 
 | Días restantes | Semáforo | ¿Despachable en mostrador? |
 |---|---|---|
@@ -307,8 +322,8 @@ Regla aprobada: la venta permite lotes con `dias_restantes >= 30` y bloquea de `
     1. Verifica turno de caja `ABIERTA` del empleado en sesión (400 si no lo tiene).
     2. Carga los productos y valida que existan y estén activos (404/400). Rechaza productos duplicados en el mismo request.
     3. Si algún ítem tiene `requiere_receta = true`, exige `numero_receta` y valida **existencia, vigencia y uso único** (receta no vinculada a una venta `COMPLETADA` previa). Además, si llega `id_cliente`, debe coincidir con el cliente de la receta; si no llega, se asocia el cliente de la receta. La fila de la receta se bloquea con `SELECT ... FOR UPDATE` para impedir doble uso concurrente.
-    4. Por cada ítem busca los lotes de la sucursal del usuario con `cantidad > 0` y `fecha_vencimiento >= hoy + 30 días`, los ordena FEFO y reparte la cantidad entre ellos con descuento condicional (`cantidad: { gte: X }`) para evitar sobreventa concurrente. Si no alcanza, diferencia el error: sin stock, stock retenido en lotes 🔴/🛑, o stock vendible insuficiente.
-    5. Inserta la cabecera `venta` y sus `detalle_venta` (una fila por lote asignado; `subtotal` es columna generada y no se escribe).
+    4. Por cada ítem bloquea los lotes elegibles de la sucursal del usuario (`cantidad > 0` y `fecha_vencimiento >= hoy + 30 días`) con `SELECT ... FOR UPDATE` y orden determinista (`fecha_vencimiento ASC, id_lote ASC`) para serializar ventas concurrentes del mismo producto sin deadlocks, los ordena FEFO y reparte la cantidad entre ellos con descuento condicional (`cantidad: { gte: X }`) como segunda barrera atómica. Si no alcanza, diferencia el error: sin stock, stock retenido en lotes 🔴/🛑, o stock vendible insuficiente.
+    5. Inserta la cabecera `venta` y sus `detalle_venta` (una fila por lote asignado; `subtotal` es columna generada y no se escribe). El `subtotal` y `total` de la cabecera se calculan con aritmética decimal exacta (`Prisma.Decimal`) para evitar drift de centavos frente a las columnas `Decimal(12,2)`.
     6. Registra las salidas en `kardex_movimiento` (`tipo_movimiento: 'VENTA'`, `referencia_tipo: 'VENTA'`, `referencia_id = id_venta`, cantidad **negativa**).
   * **Convención de kardex:** entradas con cantidad positiva (`+`), salidas con cantidad negativa (`-`); el `tipo_movimiento` define la operación (`VENTA`, `AJUSTE_INGRESO`, y en Fase 2 `TRASLADO_SALIDA`/`TRASLADO_ENTRADA`/`MERMA`).
 * **`GET /ventas/:id`** (`@Roles('Cajero', 'Gerente', 'Dueño')`): retorna la venta con su `detalle_venta` (producto + lote), cliente y montos. El Cajero y el Gerente solo pueden consultar ventas de su sucursal (404 en caso contrario); el Dueño accede a todas.

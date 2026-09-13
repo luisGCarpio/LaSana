@@ -7,6 +7,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { CreateProductoDto } from './dto/create-producto.dto';
 import { UpdateProductoDto } from './dto/update-producto.dto';
 import { QueryProductosDto } from './dto/query-productos.dto';
+import { manejarErrorPrisma } from '../../common/utils/prisma-error.util';
 
 @Injectable()
 export class ProductosService {
@@ -25,15 +26,19 @@ export class ProductosService {
     }
 
     // 2. Crear producto en el catálogo
-    return this.prisma.producto.create({
-      data: {
-        codigo: dto.codigo,
-        nombre: dto.nombre,
-        descripcion: dto.descripcion || null,
-        precio_venta: dto.precio_venta,
-        requiere_receta: dto.requiere_receta ?? false,
-      },
-    });
+    // .catch: la verificación previa de unicidad es check-then-insert; si dos
+    // usuarios crean el mismo código en paralelo, la BD responde P2002 => 409.
+    return this.prisma.producto
+      .create({
+        data: {
+          codigo: dto.codigo,
+          nombre: dto.nombre,
+          descripcion: dto.descripcion || null,
+          precio_venta: dto.precio_venta,
+          requiere_receta: dto.requiere_receta ?? false,
+        },
+      })
+      .catch(manejarErrorPrisma);
   }
 
   async findAll(query: QueryProductosDto) {
@@ -93,11 +98,13 @@ export class ProductosService {
       }
     }
 
-    // 2. Actualizar producto
-    return this.prisma.producto.update({
-      where: { id_producto: id },
-      data: dto,
-    });
+    // 2. Actualizar producto (P2002 por carrera en el cambio de código => 409)
+    return this.prisma.producto
+      .update({
+        where: { id_producto: id },
+        data: dto,
+      })
+      .catch(manejarErrorPrisma);
   }
 
   async remove(id: number) {
