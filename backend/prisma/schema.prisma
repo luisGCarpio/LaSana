@@ -1,0 +1,314 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model auditoria_empleado {
+  id_auditoria   Int      @id @default(autoincrement())
+  id_empleado    Int
+  accion         String   @db.VarChar(50)
+  modulo         String?  @db.VarChar(80)
+  tabla_afectada String?  @db.VarChar(80)
+  id_registro    Int?
+  descripcion    String?
+  fecha_accion   DateTime @default(now()) @db.Timestamp(6)
+  empleado       empleado @relation(fields: [id_empleado], references: [id_empleado], onDelete: NoAction, onUpdate: NoAction, map: "fk_auditoria_empleado")
+
+  @@index([id_empleado], map: "idx_auditoria_empleado")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model caja {
+  id_caja     Int           @id @default(autoincrement())
+  id_sucursal Int
+  nombre      String        @db.VarChar(80)
+  activa      Boolean       @default(true)
+  sucursal    sucursal      @relation(fields: [id_sucursal], references: [id_sucursal], onDelete: NoAction, onUpdate: NoAction, map: "fk_caja_sucursal")
+  cierre_caja cierre_caja[]
+
+  @@unique([id_sucursal, nombre], map: "uq_caja_sucursal_nombre")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model cierre_caja {
+  id_cierre      Int       @id @default(autoincrement())
+  id_caja        Int
+  id_empleado    Int
+  fecha_apertura DateTime  @default(now()) @db.Timestamp(6)
+  fecha_cierre   DateTime? @db.Timestamp(6)
+  monto_inicial  Decimal   @default(0) @db.Decimal(12, 2)
+  monto_esperado Decimal   @default(0) @db.Decimal(12, 2)
+  monto_fisico   Decimal?  @db.Decimal(12, 2)
+  diferencia     Decimal?  @db.Decimal(12, 2)
+  estado         String    @default("ABIERTA") @db.VarChar(30)
+  observacion    String?
+  caja           caja      @relation(fields: [id_caja], references: [id_caja], onDelete: NoAction, onUpdate: NoAction, map: "fk_cierre_caja")
+  empleado       empleado  @relation(fields: [id_empleado], references: [id_empleado], onDelete: NoAction, onUpdate: NoAction, map: "fk_cierre_empleado")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model cliente {
+  id_cliente Int      @id @default(autoincrement())
+  documento  String?  @unique @db.VarChar(30)
+  nombres    String   @db.VarChar(100)
+  apellidos  String?  @db.VarChar(100)
+  telefono   String?  @db.VarChar(20)
+  correo     String?  @db.VarChar(150)
+  direccion  String?  @db.VarChar(200)
+  activo     Boolean  @default(true)
+  receta     receta[]
+  venta      venta[]
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model compra {
+  id_compra      Int              @id @default(autoincrement())
+  id_proveedor   Int
+  id_sucursal    Int
+  id_empleado    Int
+  fecha          DateTime         @default(now()) @db.Timestamp(6)
+  estado         String           @default("PENDIENTE") @db.VarChar(30)
+  total          Decimal          @default(0) @db.Decimal(12, 2)
+  empleado       empleado         @relation(fields: [id_empleado], references: [id_empleado], onDelete: NoAction, onUpdate: NoAction, map: "fk_compra_empleado")
+  proveedor      proveedor        @relation(fields: [id_proveedor], references: [id_proveedor], onDelete: NoAction, onUpdate: NoAction, map: "fk_compra_proveedor")
+  sucursal       sucursal         @relation(fields: [id_sucursal], references: [id_sucursal], onDelete: NoAction, onUpdate: NoAction, map: "fk_compra_sucursal")
+  detalle_compra detalle_compra[]
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model detalle_compra {
+  id_detalle_compra Int      @id @default(autoincrement())
+  id_compra         Int
+  id_producto       Int
+  id_lote           Int
+  cantidad          Int
+  precio_unitario   Decimal  @db.Decimal(12, 2)
+  subtotal          Decimal? @default(dbgenerated("((cantidad)::numeric * precio_unitario)")) @db.Decimal(12, 2)
+  compra            compra   @relation(fields: [id_compra], references: [id_compra], onDelete: Cascade, onUpdate: NoAction, map: "fk_detalle_compra_compra")
+  lote              lote     @relation(fields: [id_lote], references: [id_lote], onDelete: NoAction, onUpdate: NoAction, map: "fk_detalle_compra_lote")
+  producto          producto @relation(fields: [id_producto], references: [id_producto], onDelete: NoAction, onUpdate: NoAction, map: "fk_detalle_compra_producto")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model detalle_traslado {
+  id_detalle_traslado Int      @id @default(autoincrement())
+  id_traslado         Int
+  id_lote             Int
+  cantidad            Int
+  lote                lote     @relation(fields: [id_lote], references: [id_lote], onDelete: NoAction, onUpdate: NoAction, map: "fk_detalle_traslado_lote")
+  traslado            traslado @relation(fields: [id_traslado], references: [id_traslado], onDelete: Cascade, onUpdate: NoAction, map: "fk_detalle_traslado_traslado")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model detalle_venta {
+  id_detalle_venta Int      @id @default(autoincrement())
+  id_venta         Int
+  id_producto      Int
+  id_lote          Int
+  cantidad         Int
+  precio_unitario  Decimal  @db.Decimal(12, 2)
+  subtotal         Decimal? @default(dbgenerated("((cantidad)::numeric * precio_unitario)")) @db.Decimal(12, 2)
+  lote             lote     @relation(fields: [id_lote], references: [id_lote], onDelete: NoAction, onUpdate: NoAction, map: "fk_detalle_venta_lote")
+  producto         producto @relation(fields: [id_producto], references: [id_producto], onDelete: NoAction, onUpdate: NoAction, map: "fk_detalle_venta_producto")
+  venta            venta    @relation(fields: [id_venta], references: [id_venta], onDelete: Cascade, onUpdate: NoAction, map: "fk_detalle_venta_venta")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model empleado {
+  id_empleado                                      Int                  @id @default(autoincrement())
+  id_sucursal                                      Int
+  id_rol                                           Int
+  documento                                        String               @unique @db.VarChar(30)
+  nombres                                          String               @db.VarChar(100)
+  apellidos                                        String               @db.VarChar(100)
+  telefono                                         String?              @db.VarChar(20)
+  correo                                           String?              @db.VarChar(150)
+  cargo                                            String?              @db.VarChar(80)
+  fecha_ingreso                                    DateTime             @default(dbgenerated("CURRENT_DATE")) @db.Date
+  activo                                           Boolean              @default(true)
+  auditoria_empleado                               auditoria_empleado[]
+  cierre_caja                                      cierre_caja[]
+  compra                                           compra[]
+  rol                                              rol                  @relation(fields: [id_rol], references: [id_rol], onDelete: NoAction, onUpdate: NoAction, map: "fk_empleado_rol")
+  sucursal                                         sucursal             @relation(fields: [id_sucursal], references: [id_sucursal], onDelete: NoAction, onUpdate: NoAction, map: "fk_empleado_sucursal")
+  kardex_movimiento                                kardex_movimiento[]
+  traslado_traslado_id_empleado_confirmaToempleado traslado[]           @relation("traslado_id_empleado_confirmaToempleado")
+  traslado_traslado_id_empleado_solicitaToempleado traslado[]           @relation("traslado_id_empleado_solicitaToempleado")
+  usuario                                          usuario?
+  venta                                            venta[]
+
+  @@index([id_rol], map: "idx_empleado_rol")
+  @@index([id_sucursal], map: "idx_empleado_sucursal")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model inventario_lote {
+  id_inventario Int      @id @default(autoincrement())
+  id_sucursal   Int
+  id_lote       Int
+  cantidad      Int      @default(0)
+  stock_minimo  Int      @default(0)
+  lote          lote     @relation(fields: [id_lote], references: [id_lote], onDelete: NoAction, onUpdate: NoAction, map: "fk_inventario_lote")
+  sucursal      sucursal @relation(fields: [id_sucursal], references: [id_sucursal], onDelete: NoAction, onUpdate: NoAction, map: "fk_inventario_sucursal")
+
+  @@unique([id_sucursal, id_lote], map: "uq_inventario_sucursal_lote")
+  @@index([id_lote], map: "idx_inventario_lote")
+  @@index([id_sucursal], map: "idx_inventario_sucursal")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model kardex_movimiento {
+  id_movimiento    Int      @id @default(autoincrement())
+  id_empleado      Int
+  id_lote          Int
+  id_sucursal      Int
+  tipo_movimiento  String   @db.VarChar(40)
+  cantidad         Int
+  motivo           String?  @db.VarChar(250)
+  referencia_tipo  String?  @db.VarChar(50)
+  referencia_id    Int?
+  fecha_movimiento DateTime @default(now()) @db.Timestamp(6)
+  empleado         empleado @relation(fields: [id_empleado], references: [id_empleado], onDelete: NoAction, onUpdate: NoAction, map: "fk_kardex_empleado")
+  lote             lote     @relation(fields: [id_lote], references: [id_lote], onDelete: NoAction, onUpdate: NoAction, map: "fk_kardex_lote")
+  sucursal         sucursal @relation(fields: [id_sucursal], references: [id_sucursal], onDelete: NoAction, onUpdate: NoAction, map: "fk_kardex_sucursal")
+
+  @@index([id_empleado], map: "idx_kardex_empleado")
+  @@index([id_lote], map: "idx_kardex_lote")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model lote {
+  id_lote           Int                 @id @default(autoincrement())
+  id_producto       Int
+  numero_lote       String              @db.VarChar(80)
+  fecha_fabricacion DateTime?           @db.Date
+  fecha_vencimiento DateTime            @db.Date
+  detalle_compra    detalle_compra[]
+  detalle_traslado  detalle_traslado[]
+  detalle_venta     detalle_venta[]
+  inventario_lote   inventario_lote[]
+  kardex_movimiento kardex_movimiento[]
+  producto          producto            @relation(fields: [id_producto], references: [id_producto], onDelete: NoAction, onUpdate: NoAction, map: "fk_lote_producto")
+
+  @@unique([id_producto, numero_lote], map: "uq_lote_producto_numero")
+  @@index([id_producto], map: "idx_lote_producto")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model producto {
+  id_producto     Int              @id @default(autoincrement())
+  codigo          String           @unique @db.VarChar(50)
+  nombre          String           @db.VarChar(150)
+  descripcion     String?
+  precio_venta    Decimal          @default(0) @db.Decimal(12, 2)
+  requiere_receta Boolean          @default(false)
+  activo          Boolean          @default(true)
+  detalle_compra  detalle_compra[]
+  detalle_venta   detalle_venta[]
+  lote            lote[]
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model proveedor {
+  id_proveedor Int      @id @default(autoincrement())
+  nombre       String   @db.VarChar(150)
+  nit          String?  @unique @db.VarChar(30)
+  telefono     String?  @db.VarChar(20)
+  correo       String?  @db.VarChar(150)
+  direccion    String?  @db.VarChar(200)
+  activo       Boolean  @default(true)
+  compra       compra[]
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model receta {
+  id_receta         Int       @id @default(autoincrement())
+  id_cliente        Int
+  numero_receta     String    @unique @db.VarChar(80)
+  fecha_emision     DateTime  @db.Date
+  fecha_vencimiento DateTime? @db.Date
+  observacion       String?
+  cliente           cliente   @relation(fields: [id_cliente], references: [id_cliente], onDelete: NoAction, onUpdate: NoAction, map: "fk_receta_cliente")
+  venta             venta[]
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model rol {
+  id_rol      Int        @id @default(autoincrement())
+  nombre      String     @unique @db.VarChar(50)
+  descripcion String?    @db.VarChar(200)
+  empleado    empleado[]
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model sucursal {
+  id_sucursal                                     Int                 @id @default(autoincrement())
+  nombre                                          String              @db.VarChar(100)
+  direccion                                       String              @db.VarChar(200)
+  telefono                                        String?             @db.VarChar(20)
+  activo                                          Boolean             @default(true)
+  caja                                            caja[]
+  compra                                          compra[]
+  empleado                                        empleado[]
+  inventario_lote                                 inventario_lote[]
+  kardex_movimiento                               kardex_movimiento[]
+  traslado_traslado_id_sucursal_destinoTosucursal traslado[]          @relation("traslado_id_sucursal_destinoTosucursal")
+  traslado_traslado_id_sucursal_origenTosucursal  traslado[]          @relation("traslado_id_sucursal_origenTosucursal")
+  venta                                           venta[]
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model traslado {
+  id_traslado                                      Int                @id @default(autoincrement())
+  id_sucursal_origen                               Int
+  id_sucursal_destino                              Int
+  id_empleado_solicita                             Int
+  id_empleado_confirma                             Int?
+  estado                                           String             @default("PENDIENTE") @db.VarChar(30)
+  fecha_solicitud                                  DateTime           @default(now()) @db.Timestamp(6)
+  fecha_confirmacion                               DateTime?          @db.Timestamp(6)
+  observacion                                      String?
+  detalle_traslado                                 detalle_traslado[]
+  empleado_traslado_id_empleado_confirmaToempleado empleado?          @relation("traslado_id_empleado_confirmaToempleado", fields: [id_empleado_confirma], references: [id_empleado], onDelete: NoAction, onUpdate: NoAction, map: "fk_traslado_empleado_confirma")
+  empleado_traslado_id_empleado_solicitaToempleado empleado           @relation("traslado_id_empleado_solicitaToempleado", fields: [id_empleado_solicita], references: [id_empleado], onDelete: NoAction, onUpdate: NoAction, map: "fk_traslado_empleado_solicita")
+  sucursal_traslado_id_sucursal_destinoTosucursal  sucursal           @relation("traslado_id_sucursal_destinoTosucursal", fields: [id_sucursal_destino], references: [id_sucursal], onDelete: NoAction, onUpdate: NoAction, map: "fk_traslado_sucursal_destino")
+  sucursal_traslado_id_sucursal_origenTosucursal   sucursal           @relation("traslado_id_sucursal_origenTosucursal", fields: [id_sucursal_origen], references: [id_sucursal], onDelete: NoAction, onUpdate: NoAction, map: "fk_traslado_sucursal_origen")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model usuario {
+  id_usuario     Int       @id @default(autoincrement())
+  id_empleado    Int       @unique
+  nombre_usuario String    @unique @db.VarChar(50)
+  password_hash  String    @db.VarChar(255)
+  activo         Boolean   @default(true)
+  fecha_creacion DateTime  @default(now()) @db.Timestamp(6)
+  ultimo_acceso  DateTime? @db.Timestamp(6)
+  empleado       empleado  @relation(fields: [id_empleado], references: [id_empleado], onDelete: NoAction, onUpdate: NoAction, map: "fk_usuario_empleado")
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model venta {
+  id_venta      Int             @id @default(autoincrement())
+  id_sucursal   Int
+  id_empleado   Int
+  id_cliente    Int?
+  id_receta     Int?
+  fecha         DateTime        @default(now()) @db.Timestamp(6)
+  subtotal      Decimal         @default(0) @db.Decimal(12, 2)
+  impuesto      Decimal         @default(0) @db.Decimal(12, 2)
+  total         Decimal         @default(0) @db.Decimal(12, 2)
+  estado        String          @default("COMPLETADA") @db.VarChar(30)
+  detalle_venta detalle_venta[]
+  cliente       cliente?        @relation(fields: [id_cliente], references: [id_cliente], onDelete: NoAction, onUpdate: NoAction, map: "fk_venta_cliente")
+  empleado      empleado        @relation(fields: [id_empleado], references: [id_empleado], onDelete: NoAction, onUpdate: NoAction, map: "fk_venta_empleado")
+  receta        receta?         @relation(fields: [id_receta], references: [id_receta], onDelete: NoAction, onUpdate: NoAction, map: "fk_venta_receta")
+  sucursal      sucursal        @relation(fields: [id_sucursal], references: [id_sucursal], onDelete: NoAction, onUpdate: NoAction, map: "fk_venta_sucursal")
+
+  @@index([id_sucursal], map: "idx_venta_sucursal")
+}
